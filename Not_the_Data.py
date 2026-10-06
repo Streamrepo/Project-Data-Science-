@@ -9,7 +9,7 @@ from entsoe import EntsoePandasClient
 # Load API token
 load_dotenv()
 
-api_key = os.getenv("ENTSOE_API_KEY")
+api_key = os.getenv("5e3c5ae2-6376-4ba5-a838-817c3621c86b")
 
 if api_key is None:
     raise ValueError("ENTSOE_API_KEY was not found in .env")
