@@ -1,7 +1,7 @@
 ,,2021,2022,2023,2024
 day_ahead_price,raw,0.0001,0.0001,0.0001,0.0001
-price_long,raw,0.0225,0.0053,0.0492,0.0035
-price_short,raw,0.0225,0.0053,0.0492,0.0035
+price_long,raw,0.0236,0.0092,0.0608,0.0048
+price_short,raw,0.0236,0.0092,0.0608,0.0048
 load_forecast,raw,0.0,0.0,0.0,0.0
 wind_onshore_forecast,raw,0.0105,0.0027,0.0029,0.0001
 wind_offshore_forecast,raw,1.0,1.0,0.5971,0.0
@@ -9,8 +9,8 @@ solar_forecast,raw,0.0084,0.0038,0.0029,0.0001
 scheduled_imports,raw,0.0027,0.0,0.0,0.0
 scheduled_exports,raw,0.0,0.0,0.0,0.0
 day_ahead_price,final,0.0001,0.0001,0.0001,0.0001
-price_long,final,0.0225,0.0053,0.0492,0.0035
-price_short,final,0.0225,0.0053,0.0492,0.0035
+price_long,final,0.0236,0.0092,0.0608,0.0048
+price_short,final,0.0236,0.0092,0.0608,0.0048
 load_forecast,final,0.0,0.0,0.0,0.0
 wind_onshore_forecast,final,0.0095,0.0023,0.0025,0.0
 wind_offshore_forecast,final,0.0,0.0,0.0,0.0

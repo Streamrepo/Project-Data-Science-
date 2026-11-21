@@ -7,6 +7,9 @@ Outputs (Data/Processed/):
   expost_table.csv         realised / ex-post variables for explaining events (never used in X)
   thresholds.json          training-only q90 thresholds
   missingness_by_year.csv  share of missing values per variable and year (audit)
+  frequency_by_file_year.csv  timestamp spacing per raw file and year (audit, plan step 2)
+  design_matrix.csv        scaled predictor matrix + targets for usable rows (train-only scaling)
+  scaler.json              training means / SDs used for scaling
 
 Run:  .venv/bin/python src/build_dataset.py
 """
@@ -43,16 +46,28 @@ def read_raw(name, **kwargs):
 def covered_cells(index):
     """Number of 15-minute cells each observation covers (1, 2 or 4).
 
-    An observation covers the time until the next observation. Where that gap is longer than
-    an hour the data is missing, so the previous gap (the series' own resolution) is used and
-    the gap stays empty. Resolution is inferred row by row, never assumed per file.
+    The series' own cadence is the FINEST spacing seen among the previous 48 gaps (plus the next
+    gap if it is 30 minutes or less). Using the finest nearby spacing means a single missing
+    30-minute slot (a 60-minute gap) can never be mistaken for an hourly series and filled with
+    the previous value. Gaps longer than 60 minutes are missing data and stay empty. Every raw
+    file here changes resolution at most once, from coarse to fine (profiled in
+    frequency_by_file_year.csv), so this rule loses no data at the switch.
     """
     t = index.to_series()
-    nxt = t.shift(-1) - t
-    prv = t - t.shift(1)
-    limit = pd.Timedelta("60min")
-    step = nxt.where(nxt <= limit, prv.where(prv <= limit)).ffill().bfill()
-    cells = (step / QUARTER).round().clip(1, 4).to_numpy().astype(int)
+    gap = ((t - t.shift(1)) / pd.Timedelta("1min")).to_numpy()  # minutes to the previous row
+    gap = np.where(np.isin(gap, (15, 30, 60)), gap, np.nan)
+    n = len(gap)
+    padded = np.concatenate([[np.nan] * 47, gap])
+    back = np.lib.stride_tricks.sliding_window_view(padded, 48)[:n]  # gaps i-47 .. i
+    nxt = np.concatenate([gap[1:], [np.nan]])
+    nxt = np.where(nxt <= 30, nxt, np.nan)
+    with np.errstate(all="ignore"):
+        cadence = np.fmin(np.nanmin(np.where(np.isnan(back), np.inf, back), axis=1), nxt)
+    cadence = np.where(np.isinf(cadence), np.nan, cadence)
+    fallback = np.concatenate([gap[1:], [np.nan]])  # lone rows: use the next gap if usable
+    cadence = np.where(np.isnan(cadence), fallback, cadence)
+    cadence = pd.Series(cadence).ffill().bfill().to_numpy()
+    cells = np.rint(cadence / 15).astype(int)
     return np.where(cells == 3, 4, cells)
 
 
@@ -193,10 +208,64 @@ def missingness_by_year(raw, final):
     return pd.DataFrame(rows).T
 
 
+def frequency_audit():
+    """Plan step 2: timestamp spacing per file and Paris-year, computed, not assumed."""
+    rows = []
+    for path in sorted(RAW.glob("*.csv")):
+        header = [0, 1] if path.stem == "generation_actual_fr" else 0
+        idx = pd.to_datetime(pd.read_csv(path, header=header, index_col=0).index, utc=True)
+        idx = idx.sort_values()
+        steps = idx.to_series().diff().dropna()
+        for year, g in steps.groupby(steps.index.tz_convert("Europe/Paris").year):
+            counts = g.value_counts()
+            rows.append({
+                "file": path.stem, "year": year, "timestamps": int((idx.tz_convert(
+                    "Europe/Paris").year == year).sum()),
+                "dominant_step": str(counts.index[0]),
+                "dominant_share": round(counts.iloc[0] / len(g), 4),
+                "other_steps": "; ".join(f"{k}:{v}" for k, v in counts.iloc[1:4].items()),
+                "repeated_timestamps": int(pd.Series(idx[idx.tz_convert("Europe/Paris").year
+                                                          == year]).duplicated().sum()),
+            })
+    return pd.DataFrame(rows)
+
+
+CONTINUOUS = ["day_ahead_price", "load_forecast", "wind_onshore_forecast",
+              "wind_offshore_forecast", "solar_forecast", "scheduled_imports",
+              "scheduled_exports", "net_scheduled_imports", "residual_load_forecast"]
+X_REQUIRED = CONTINUOUS[:7]  # a row is usable only if all base predictors are present
+
+
+def build_design_matrix(table):
+    """Scaled, leakage-safe predictor matrix. Means and SDs come from training rows only."""
+    complete = table[X_REQUIRED].notna().all(axis=1) & table[["Y_short", "Y_long"]].notna().all(axis=1)
+    train = complete & (table["split"] == "train")
+    stats = {}
+    z = pd.DataFrame(index=table.index)
+    for c in CONTINUOUS:
+        mean, sd = float(table.loc[train, c].mean()), float(table.loc[train, c].std(ddof=0))
+        stats[c] = {"mean": mean, "sd": sd, "constant_in_train": bool(sd == 0)}
+        if sd > 0:  # a column that never varies in training cannot be standardised or learned
+            z[f"{c}_z"] = (table[c] - mean) / sd
+    z["hour_sin"], z["hour_cos"] = table["hour_sin"], table["hour_cos"]
+    for d in range(1, 7):  # Monday is the reference day
+        z[f"dow_{d}"] = (table["day_of_week"] == d).astype(int)
+    season = table["month"].map(lambda m: "winter" if m in (12, 1, 2) else "spring" if m <= 5
+                                else "summer" if m <= 8 else "autumn")
+    for s in ("spring", "summer", "autumn"):  # winter is the reference season
+        z[f"season_{s}"] = (season == s).astype(int)
+    matrix = pd.concat([table[["datetime_paris", "split", "Y_short", "Y_long"]], z], axis=1)
+    return matrix[complete], stats
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    frequency_audit().to_csv(OUT / "frequency_by_file_year.csv", index=False)
     raw, table, thresholds = build_modelling_table()
     expost = build_expost_table(table)
+    matrix, scaler = build_design_matrix(table)
+    matrix.to_csv(OUT / "design_matrix.csv", float_format="%.6g")
+    (OUT / "scaler.json").write_text(json.dumps(scaler, indent=2))
 
     table.to_csv(OUT / "modelling_table.csv", float_format="%.6g")
     expost.to_csv(OUT / "expost_table.csv", float_format="%.6g")

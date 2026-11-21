@@ -2,7 +2,7 @@
 
 **Source:** `French_Electricity_Project_Modelling_Brief (1).pdf` (8 pages). Sections 1 to 9 follow the brief. Section 10 is my addition from profiling the raw data, and section 11 lists decisions the brief leaves open. Both are labelled as not coming from the brief.
 
-**Status (2026-11-21): plan only. Nothing from this plan is to be executed until Vivek says to start.**
+**Status (2026-11-21): data processing (sections 3 to 8) is done by `src/build_dataset.py` and written to `Data/Processed/`; see section 12. No model has been fitted. Waiting for Vivek's instruction before the logistic regressions or anything later.**
 
 **Scope:** ENTSO-E France, 1 January 2021 to 31 December 2024.
 **Objective:** build a reproducible, leakage-safe processed dataset, then fit interpretable baseline models for short-side and long-side settlement stress.
@@ -129,3 +129,35 @@ These are not in the brief. They come from profiling `Data/Raw/ENSTOE/`.
 5. **Regularisation and class weights** are not specified. Suggestion: L2 penalty with strength chosen on 2023 only, and unweighted as the primary model.
 6. **Collinear predictors:** keep `net_scheduled_imports` and `residual_load_forecast` in the table but leave them out of the first fitted matrix, or include them with regularisation?
 7. **2025 data:** downloading it needs the API key and a changed `end` date in `download_entsoe.py`. The brief says to do this later.
+
+## 12. Result of the data-processing stage (2026-11-21)
+
+Run with `.venv/bin/python src/build_dataset.py` (about 5 seconds, reproducible: two runs give identical files, raw files untouched).
+
+| Output in `Data/Processed/` | Content |
+|---|---|
+| `modelling_table.csv` | 70,128 half-hour rows (2021-2024), the section 8 columns plus `price_long`, `price_short`, `residual_load_forecast` |
+| `design_matrix.csv` | scaled predictors and `Y_short`, `Y_long` for the usable rows only, scaled with training-only means and SDs |
+| `scaler.json` | training means and SDs; marks `wind_offshore_forecast` as constant in training |
+| `thresholds.json` | `q90_short = 77.89`, `q90_long = 78.01` (training sample only) |
+| `expost_table.csv` | realised variables and forecast errors for explanation only |
+| `missingness_by_year.csv`, `frequency_by_file_year.csv` | the two audits from steps 2 and 8 |
+
+| Split | Slots | Missing target | Missing predictor | Usable | Share `Y_short = 1` | Share `Y_long = 1` |
+|---|---|---|---|---|---|---|
+| train (2021-22) | 35,040 | 580 | 354 | 34,111 | 10.0% | 10.0% |
+| validation (2023) | 17,520 | 1,067 | 46 | 16,409 | 7.2% | 5.3% |
+| test (2024) | 17,568 | 87 | 2 | 17,481 | 10.4% | 8.1% |
+
+**Defaults applied for the section 11 decisions (not confirmed, change on request):**
+1. Forecast gaps (load, wind onshore, solar, scheduled flows): the last known value is carried forward for at most 4 slots (2 hours), never backward. Longer gaps stay missing and the row is excluded.
+2. Offshore wind before its first reported value (2023-08-06) is set to 0. It is constant in the training period, so it is left out of `design_matrix.csv` and cannot be learned.
+3. A scheduled import or export total is missing if any of the 6 borders is missing.
+4. `net_scheduled_imports` and `residual_load_forecast` are in the design matrix as scaled columns. Choosing which of the collinear columns to fit is left for the modelling stage.
+5. Hour is encoded from the half-hour fraction (for example 10:30 is 10.5), so `hour_sin` and `hour_cos` distinguish the two half-hours. Day of week and season are one-hot (Monday and winter are the references).
+
+**Checks that pass:** grid is exactly 30-minute with 1,461 days times 48 rows; `Long <= Short` on every row; splits are chronological; hourly day-ahead prices map to both half-hours; the 15-minute rows on 31 Dec 2024 are averaged; `S_Long = P_DA - P_Long`; thresholds come from training rows only and are applied unchanged to validation and test; the training z-scores have mean 0 and SD 1; the design matrix has no missing values and no price, `D`, `S` or `Y_` inputs.
+
+**Correction made after an independent audit (2026-11-21).** The first version of the pipeline filled a missing 30-minute imbalance slot with the previous slot's price, because a single missing slot leaves a 60-minute gap and the code read that as an hourly series. It invented 315 target prices (for example 2021-01-07 13:30). The resolution rule in `covered_cells` was changed to use the finest spacing among the previous 48 gaps, so a gap is never filled. The tables were rebuilt: the thresholds, the split table above and the design matrix (68,001 usable rows) all changed slightly. The version pushed before this correction (commit `d550f00`) contains the invented prices.
+
+**Audit result.** Every column of `modelling_table.csv` was rebuilt from the raw CSVs by a different method (resolution decided from the minute offsets present, not from gaps) and compared on all 70,128 rows. Day-ahead, long and short prices, load and renewable forecasts, scheduled imports and exports, actual load, imbalance volume and the main generation columns match with no invented and no lost values. The only slots not compared are those within 3 hours of a file's single resolution switch (at most 26 slots per column) and two isolated slots that were checked by hand. Carried-forward cells (at most 4 slots) equal the last real value. Targets, thresholds, calendar columns, the split rule, the scaler and the design matrix were also recomputed and match.

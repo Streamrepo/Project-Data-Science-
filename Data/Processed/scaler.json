@@ -1,0 +1,47 @@
+{
+  "day_ahead_price": {
+    "mean": 194.52580663129197,
+    "sd": 145.3724481017973,
+    "constant_in_train": false
+  },
+  "load_forecast": {
+    "mean": 51904.940752250004,
+    "sd": 11619.542948356413,
+    "constant_in_train": false
+  },
+  "wind_onshore_forecast": {
+    "mean": 4063.1981551405706,
+    "sd": 2991.235813348249,
+    "constant_in_train": false
+  },
+  "wind_offshore_forecast": {
+    "mean": 0.0,
+    "sd": 0.0,
+    "constant_in_train": true
+  },
+  "solar_forecast": {
+    "mean": 1897.918088886283,
+    "sd": 2683.399254968561,
+    "constant_in_train": false
+  },
+  "scheduled_imports": {
+    "mean": 5539.687095071971,
+    "sd": 3444.0058287538504,
+    "constant_in_train": false
+  },
+  "scheduled_exports": {
+    "mean": 7056.329011169418,
+    "sd": 3500.0950673809534,
+    "constant_in_train": false
+  },
+  "net_scheduled_imports": {
+    "mean": -1516.6419160974467,
+    "sd": 6411.928469381617,
+    "constant_in_train": false
+  },
+  "residual_load_forecast": {
+    "mean": 45943.82450822316,
+    "sd": 11728.652701799969,
+    "constant_in_train": false
+  }
+}
