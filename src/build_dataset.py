@@ -195,14 +195,22 @@ def build_expost_table(modelling):
     ex["load_forecast_error"] = ex["actual_load"] - modelling["load_forecast"]
     ex["wind_onshore_forecast_error"] = ex["gen_wind_onshore"] - modelling["wind_onshore_forecast"]
     ex["solar_forecast_error"] = ex["gen_solar"] - modelling["solar_forecast"]
+    # Day-ahead forecasts, placed right after the matching actual generation column.
+    for actual, forecast in (("gen_wind_onshore", "wind_onshore_forecast"),
+                             ("gen_solar", "solar_forecast")):
+        ex.insert(ex.columns.get_loc(actual) + 1, forecast, modelling[forecast])
     keep = modelling[["datetime_paris", "split", "S_short", "S_long", "Y_short", "Y_long"]]
     ex = keep.join(ex)
-    # Ex-post table only: keep slots that have both a load forecast error and S_long.
-    no_error, no_s_long = ex["load_forecast_error"].isna(), ex["S_long"].isna()
-    print(f"expost_table: removed {int((no_error | no_s_long).sum())} of {len(ex)} slots "
-          f"(missing load forecast error: {int(no_error.sum())}, missing S_long: "
-          f"{int(no_s_long.sum())}, both: {int((no_error & no_s_long).sum())})")
-    ex = ex[~(no_error | no_s_long)]
+    # Ex-post table only: keep slots that have S_long and the load, wind onshore and solar
+    # forecast errors.
+    reasons = {"load forecast error": ex["load_forecast_error"].isna(),
+               "S_long": ex["S_long"].isna(),
+               "wind onshore forecast error": ex["wind_onshore_forecast_error"].isna(),
+               "solar forecast error": ex["solar_forecast_error"].isna()}
+    drop = pd.concat(reasons, axis=1).any(axis=1)
+    print(f"expost_table: removed {int(drop.sum())} of {len(ex)} slots; missing per reason "
+          + ", ".join(f"{k}: {int(v.sum())}" for k, v in reasons.items()))
+    ex = ex[~drop]
     ex.index.name = "datetime"
     return ex
 
