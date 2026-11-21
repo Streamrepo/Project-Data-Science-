@@ -202,3 +202,15 @@ print("Actual load:", actual_load.shape)
 print("Load forecast:", load_forecast.shape)
 print("Generation:", generation.shape)
 print("Renewables forecast:", renewables_forecast.shape)
+
+
+
+
+
+
+##########
+
+
+
+
+
