@@ -13,7 +13,7 @@ price_long,final,0.0236,0.0092,0.0608,0.0048
 price_short,final,0.0236,0.0092,0.0608,0.0048
 load_forecast,final,0.0,0.0,0.0,0.0
 wind_onshore_forecast,final,0.0095,0.0023,0.0025,0.0
-wind_offshore_forecast,final,0.0,0.0,0.0,0.0
+wind_offshore_forecast,final,1.0,1.0,0.5971,0.0
 solar_forecast,final,0.0079,0.0031,0.0025,0.0
 scheduled_imports,final,0.0025,0.0,0.0,0.0
 scheduled_exports,final,0.0,0.0,0.0,0.0

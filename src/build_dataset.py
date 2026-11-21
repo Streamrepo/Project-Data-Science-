@@ -130,10 +130,8 @@ def build_modelling_table():
     for c in ["load_forecast", "wind_onshore_forecast", "solar_forecast",
               "scheduled_imports", "scheduled_exports"]:
         df[c] = df[c].ffill(limit=FFILL_LIMIT)
-    # Offshore wind is blank only before its first reported value (no offshore farm was reporting
-    # yet). This documented exception treats that leading blank as zero; later blanks stay blank.
-    first = raw["wind_offshore_forecast"].first_valid_index()
-    df.loc[df.index < first, "wind_offshore_forecast"] = 0.0
+    # Offshore wind is blank in the raw file before its first reported value (2023-08-06). It is
+    # left blank here, never filled with zero: a blank is not a zero.
     df["wind_offshore_forecast"] = df["wind_offshore_forecast"].ffill(limit=FFILL_LIMIT)
 
     df["net_scheduled_imports"] = df["scheduled_imports"] - df["scheduled_exports"]
@@ -154,17 +152,24 @@ def build_modelling_table():
     df["S_short"] = df["price_short"] - df["day_ahead_price"]
     df["S_long"] = df["day_ahead_price"] - df["price_long"]
 
-    # Training-only q90 thresholds, then fixed for validation and test.
-    train = df["split"] == "train"
+    df.insert(0, "datetime_paris", paris)
+    df.index.name = "datetime"
+    return raw, df
+
+
+def add_labels(df, use):
+    """Training-only q90 thresholds from the slots in `use`, then fixed for every slot and split.
+
+    `use` is the clean data: slots that have S_long and the load, wind onshore and solar
+    forecast errors. Slots outside it still get labels (if S exists) but do not influence q90.
+    """
+    train = (df["split"] == "train") & use
     thresholds = {"q90_short": float(df.loc[train, "S_short"].quantile(0.9)),
                   "q90_long": float(df.loc[train, "S_long"].quantile(0.9))}
     for side in ("short", "long"):
         s = df[f"S_{side}"]
         df[f"Y_{side}"] = (s > thresholds[f"q90_{side}"]).astype("Int8").where(s.notna())
-
-    df.insert(0, "datetime_paris", paris)
-    df.index.name = "datetime"
-    return raw, df, thresholds
+    return thresholds
 
 
 # ---- ex-post table (explanation only) ------------------------------------------------------
@@ -199,20 +204,16 @@ def build_expost_table(modelling):
     for actual, forecast in (("gen_wind_onshore", "wind_onshore_forecast"),
                              ("gen_solar", "solar_forecast")):
         ex.insert(ex.columns.get_loc(actual) + 1, forecast, modelling[forecast])
-    keep = modelling[["datetime_paris", "split", "S_short", "S_long", "Y_short", "Y_long"]]
-    ex = keep.join(ex)
-    # Ex-post table only: keep slots that have S_long and the load, wind onshore and solar
-    # forecast errors.
+    # Clean data: slots that have S_long and the load, wind onshore and solar forecast errors.
     reasons = {"load forecast error": ex["load_forecast_error"].isna(),
-               "S_long": ex["S_long"].isna(),
+               "S_long": modelling["S_long"].isna(),
                "wind onshore forecast error": ex["wind_onshore_forecast_error"].isna(),
                "solar forecast error": ex["solar_forecast_error"].isna()}
     drop = pd.concat(reasons, axis=1).any(axis=1)
     print(f"expost_table: removed {int(drop.sum())} of {len(ex)} slots; missing per reason "
           + ", ".join(f"{k}: {int(v.sum())}" for k, v in reasons.items()))
-    ex = ex[~drop]
     ex.index.name = "datetime"
-    return ex
+    return ex, drop
 
 
 # ---- audit ----------------------------------------------------------------------------------
@@ -251,18 +252,25 @@ def frequency_audit():
 CONTINUOUS = ["day_ahead_price", "load_forecast", "wind_onshore_forecast",
               "wind_offshore_forecast", "solar_forecast", "scheduled_imports",
               "scheduled_exports", "net_scheduled_imports", "residual_load_forecast"]
-X_REQUIRED = CONTINUOUS[:7]  # a row is usable only if all base predictors are present
+# A row is usable only if these predictors are present. wind_offshore_forecast is not required:
+# it is blank for the whole training period, so it cannot be used by a model trained on 2021-22.
+X_REQUIRED = ["day_ahead_price", "load_forecast", "wind_onshore_forecast", "solar_forecast",
+              "scheduled_imports", "scheduled_exports"]
 
 
 def build_design_matrix(table):
     """Scaled, leakage-safe predictor matrix. Means and SDs come from training rows only."""
-    complete = table[X_REQUIRED].notna().all(axis=1) & table[["Y_short", "Y_long"]].notna().all(axis=1)
+    complete = (table[X_REQUIRED].notna().all(axis=1) & table[["Y_short", "Y_long"]].notna().all(axis=1)
+                & table["in_clean_data"])
     train = complete & (table["split"] == "train")
     stats = {}
     z = pd.DataFrame(index=table.index)
     for c in CONTINUOUS:
+        if table.loc[train, c].notna().sum() == 0:  # blank for the whole training period
+            stats[c] = {"mean": None, "sd": None, "all_missing_in_train": True}
+            continue
         mean, sd = float(table.loc[train, c].mean()), float(table.loc[train, c].std(ddof=0))
-        stats[c] = {"mean": mean, "sd": sd, "constant_in_train": bool(sd == 0)}
+        stats[c] = {"mean": mean, "sd": sd, "all_missing_in_train": False}
         if sd > 0:  # a column that never varies in training cannot be standardised or learned
             z[f"{c}_z"] = (table[c] - mean) / sd
     z["hour_sin"], z["hour_cos"] = table["hour_sin"], table["hour_cos"]
@@ -278,16 +286,25 @@ def build_design_matrix(table):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    old_path = OUT / "thresholds.json"
+    old = json.loads(old_path.read_text()) if old_path.exists() else None
     frequency_audit().to_csv(OUT / "frequency_by_file_year.csv", index=False)
-    raw, table, thresholds = build_modelling_table()
-    expost = build_expost_table(table)
+    raw, table = build_modelling_table()
+    expost_all, drop = build_expost_table(table)
+    use = ~drop  # the clean data: all quantities below are computed on these slots
+    thresholds = add_labels(table, use)
+    table["in_clean_data"] = use
+    expost = table.loc[use, ["datetime_paris", "split", "S_short", "S_long", "Y_short",
+                             "Y_long"]].join(expost_all)
     matrix, scaler = build_design_matrix(table)
     matrix.to_csv(OUT / "design_matrix.csv", float_format="%.6g")
     (OUT / "scaler.json").write_text(json.dumps(scaler, indent=2))
 
-    table.to_csv(OUT / "modelling_table.csv", float_format="%.6g")
+    # The modelling table keeps exactly the slots of the ex-post table (the clean data).
+    clean_table = table.loc[use].drop(columns="in_clean_data")
+    clean_table.to_csv(OUT / "modelling_table.csv", float_format="%.6g")
     expost.to_csv(OUT / "expost_table.csv", float_format="%.6g")
-    (OUT / "thresholds.json").write_text(json.dumps(thresholds, indent=2))
+    old_path.write_text(json.dumps(thresholds, indent=2))
     missingness_by_year(raw, table).to_csv(OUT / "missingness_by_year.csv")
 
     # ---- checks: fail loudly if the grid or the target construction is wrong ----
@@ -299,23 +316,29 @@ def main():
     paris = table["datetime_paris"]
     assert paris[table["split"] == "train"].max() < paris[table["split"] == "validation"].min()
     assert paris[table["split"] == "validation"].max() < paris[table["split"] == "test"].min()
+    assert len(expost) == int(use.sum()) and expost.index.equals(clean_table.index)
+    core = ["day_ahead_price", "price_long", "price_short", "load_forecast", "wind_onshore_forecast",
+            "solar_forecast", "D_short", "D_long", "S_short", "S_long", "Y_short", "Y_long"]
+    assert clean_table[core].notna().all().all(), "gaps left in the clean modelling table"
 
-    x_cols = ["day_ahead_price", "load_forecast", "wind_onshore_forecast",
-              "wind_offshore_forecast", "solar_forecast", "scheduled_imports",
-              "scheduled_exports"]
-    x_ok = table[x_cols].notna().all(axis=1)
+    x_cols = X_REQUIRED + ["wind_offshore_forecast"]
+    x_ok = table[X_REQUIRED].notna().all(axis=1)
     y_ok = table[["Y_short", "Y_long"]].notna().all(axis=1)
     order = ["train", "validation", "test"]
-    print(f"slots on grid: {len(table)}   thresholds: {thresholds}")
+    print(f"modelling_table.csv: {len(clean_table)} rows (same slots as expost_table.csv)")
+    print(f"slots on grid: {len(table)}   thresholds (clean data, training only): {thresholds}")
+    if old:
+        print(f"previous thresholds: {old}")
+    rate = lambda col: table.loc[use].groupby("split")[col].apply(lambda s: s.astype(float).mean())
     summary = pd.DataFrame({
         "slots": table.groupby("split").size(),
-        "missing_target": (~y_ok).groupby(table["split"]).sum(),
-        "missing_predictor": (~x_ok).groupby(table["split"]).sum(),
-        "usable": (x_ok & y_ok).groupby(table["split"]).sum(),
-        "rate_Y_short": table.groupby("split")["Y_short"].apply(lambda s: s.astype(float).mean()),
-        "rate_Y_long": table.groupby("split")["Y_long"].apply(lambda s: s.astype(float).mean()),
+        "clean_data": use.groupby(table["split"]).sum(),
+        "usable_for_model": (x_ok & y_ok & use).groupby(table["split"]).sum(),
+        "rate_Y_short": rate("Y_short"),
+        "rate_Y_long": rate("Y_long"),
     }).loc[order]
     print(summary.round(4).to_string())
+    print("(rates are shares of Y = 1 among the clean-data slots of each split)")
     print("\nmissing predictor slots by variable and split:")
     print(table[x_cols].isna().groupby(table["split"]).sum().loc[order].to_string())
     print(f"\nwrote {OUT}")

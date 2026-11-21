@@ -132,6 +132,8 @@ These are not in the brief. They come from profiling `Data/Raw/ENSTOE/`.
 
 ## 12. Result of the data-processing stage (2026-11-21)
 
+*Superseded in part by section 16: the thresholds, the split table and the design-matrix row counts below were recomputed on the clean data.*
+
 Run with `.venv/bin/python src/build_dataset.py` (about 5 seconds, reproducible: two runs give identical files, raw files untouched).
 
 | Output in `Data/Processed/` | Content |
@@ -190,3 +192,32 @@ Method: every column was rebuilt from the raw CSVs by methods different from the
 ## 15. Second change to the ex-post table (2026-11-21, at Vivek's request)
 
 Slots with a missing wind onshore forecast error (260) or a missing solar forecast error (246) were also removed from `expost_table.csv`, on top of the section 14 removals. In total 2,157 of 70,128 slots are now removed, leaving 67,971 rows (train 34,097, validation 16,393, test 17,481). The columns `wind_onshore_forecast` and `solar_forecast` (day-ahead forecasts, MW) were added right after `gen_wind_onshore` and `gen_solar`, so each actual, forecast and error sits side by side; the load forecast columns from section 14 work the same way. The table now has 41 columns. `modelling_table.csv` and `design_matrix.csv` are byte-identical to before.
+
+## 16. Thresholds and metrics recomputed on the clean data (2026-11-21, at Vivek's request)
+
+The clean data is the set of slots kept in the ex-post table: slots that have `S_long` and the load, wind onshore and solar forecast errors (67,971 of 70,128; 2,157 removed). Everything below is now computed on those slots only, using the 2021-22 training part for the thresholds and the scaler.
+
+| Quantity | Before | Now |
+|---|---|---|
+| `q90_short` | 77.890 | **77.824** |
+| `q90_long` | 78.011 | **78.218** |
+
+| Split | Slots | Clean-data slots | Rows in design matrix | Share `Y_short = 1` | Share `Y_long = 1` |
+|---|---|---|---|---|---|
+| train (2021-22) | 35,040 | 34,097 | 34,053 | 10.0% | 10.0% |
+| validation (2023) | 17,520 | 16,393 | 16,393 | 7.2% | 5.3% |
+| test (2024) | 17,568 | 17,481 | 17,481 | 10.4% | 8.1% |
+
+The shares are the share of `Y = 1` among the clean-data slots of each split. The design matrix now has 67,927 rows (clean slots with complete predictors and both targets), and `scaler.json` holds the training means and standard deviations of those rows (for example day-ahead price mean 194.43, SD 145.38). *(Superseded by section 17: `modelling_table.csv` is now cut to the clean slots and has no `in_clean_data` column.)* Labels `Y_short` and `Y_long` are assigned to every slot that has a stress value using the new thresholds, so they are identical in all three tables.
+
+Checked: the thresholds equal the 90th percentile of the clean training slots (independent recompute), every label equals `S > q90` on all 68,394 slots that have a stress value, the training positive rate is exactly 10%, the scaler matches the clean complete training rows, and rebuilding gives identical files.
+
+## 17. Modelling table cut to the clean slots (2026-11-21, at Vivek's request)
+
+`modelling_table.csv` now holds exactly the same 67,971 slots as `expost_table.csv` (train 34,097, validation 16,393, test 17,481) and 23 columns; the `in_clean_data` column was dropped because every remaining row is clean. The two tables line up row for row, and their 9 shared columns are identical on every row. The pipeline now fails if any of `day_ahead_price`, `price_long`, `price_short`, `load_forecast`, `wind_onshore_forecast`, `solar_forecast`, `D_*`, `S_*` or `Y_*` has a gap in this table, and none does. Two columns still have gaps outside what was removed: `scheduled_imports` and `net_scheduled_imports` are missing in 44 slots (all in training), which is why `design_matrix.csv` has 67,927 rows. Thresholds, labels, scaler, design matrix and the ex-post table are unchanged by this step. Because rows were deleted, the modelling table no longer has a regular 30-minute step; the full-grid audit results in sections 10 and 13 describe the grid before this cut.
+
+## 18. Offshore wind no longer filled with zero (2026-11-21, at Vivek's request)
+
+The earlier default (section 11, item 2) filled `wind_offshore_forecast` with 0 before its first report on 2023-08-06. That is removed: the column is now blank wherever the raw file is blank (all of 2021-22 and 58% of 2023; 43,669 of the 67,971 modelling-table slots), and only a genuine reported 0 stays 0 (856 slots). A code search found no other place that fills blanks with zero. The other fills are not zeros: forecasts are carried forward at most 4 slots (2 hours), and border totals are blank if any of the 6 borders is blank.
+
+Knock-on effects: `residual_load_forecast` subtracts offshore wind, so it is now blank in the same 43,669 slots and blank for the whole training period; the scaler records it as all-missing in training and the design matrix no longer contains it. `wind_offshore_forecast` is still not in the design matrix (blank in training). It is also no longer a required predictor when counting usable rows, so the design matrix keeps 67,927 rows. Thresholds, labels and the ex-post table are unchanged.
