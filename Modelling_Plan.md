@@ -161,3 +161,24 @@ Run with `.venv/bin/python src/build_dataset.py` (about 5 seconds, reproducible:
 **Correction made after an independent audit (2026-11-21).** The first version of the pipeline filled a missing 30-minute imbalance slot with the previous slot's price, because a single missing slot leaves a 60-minute gap and the code read that as an hourly series. It invented 315 target prices (for example 2021-01-07 13:30). The resolution rule in `covered_cells` was changed to use the finest spacing among the previous 48 gaps, so a gap is never filled. The tables were rebuilt: the thresholds, the split table above and the design matrix (68,001 usable rows) all changed slightly. The version pushed before this correction (commit `d550f00`) contains the invented prices.
 
 **Audit result.** Every column of `modelling_table.csv` was rebuilt from the raw CSVs by a different method (resolution decided from the minute offsets present, not from gaps) and compared on all 70,128 rows. Day-ahead, long and short prices, load and renewable forecasts, scheduled imports and exports, actual load, imbalance volume and the main generation columns match with no invented and no lost values. The only slots not compared are those within 3 hours of a file's single resolution switch (at most 26 slots per column) and two isolated slots that were checked by hand. Carried-forward cells (at most 4 slots) equal the last real value. Targets, thresholds, calendar columns, the split rule, the scaler and the design matrix were also recomputed and match.
+
+## 13. Full audit of the processed tables (2026-11-21)
+
+Method: every column was rebuilt from the raw CSVs by methods different from the pipeline's, and compared slot by slot on the whole 70,128-slot grid. The dangerous direction is a value in the table that the raw data cannot support ("invented"). The harmless direction is a slot left blank although a value could have been derived ("conservatively blank").
+
+| Check | Result |
+|---|---|
+| `Data/Raw` unchanged since before processing (git) | pass |
+| Model-table inputs (day-ahead, imbalance long and short, load forecast, wind and solar forecasts, scheduled imports and exports) | 0 invented, 0 lost, max difference at most 0.05 (CSV rounding); the 34 wind-onshore and 30 solar carried-forward cells equal the last real value |
+| Slots within 6 hours of each file's resolution switch (checked separately by raw coverage) | all match |
+| Targets, thresholds, calendar columns, split rule, scaler, design matrix | recomputed and match |
+| Ex-post table: actual load, imbalance volume (equals the raw sum in all 68,404 slots), all 16 generation columns, physical flows, 8 balancing series | 0 invented values; max difference at most 0.05 |
+| Alignment between series (correlation peaks at lag 0 for day-ahead vs imbalance prices, load forecast vs actual, wind and solar forecast vs actual, scheduled vs physical flows, imbalance price vs volume); solar peaks at 13h Paris time; load forecast error 2.0% of mean load | pass |
+| Resolution only ever gets finer in the 18 files that feed the model table | pass |
+| `missingness_by_year.csv`, `frequency_by_file_year.csv` recomputed | match |
+
+**Known limits (all in the ex-post table, none affect the predictors or targets):**
+1. `physical_flows_*_IT_NORD` is 15-minute on 30 Dec 2024 and hourly again on 31 Dec. The pipeline leaves 31 Dec blank for it, so `physical_imports`, `physical_exports` and `net_physical_imports` are blank for all 46 slots of that day.
+2. The balancing-price columns are blank where only one of the slot's two quarter-hours has a price: 5 to 23 slots for FCR, RR and aFRR, about 150 for each mFRR direction.
+3. Two imbalance-price slots (2021-01-10 11:30 and 2023-11-24 13:30) sit next to missing rows; the raw file has no row for them and the table correctly leaves them blank.
+4. The raw files carry no publication times, so "known before delivery" for the day-ahead forecasts and schedules rests on their labels.

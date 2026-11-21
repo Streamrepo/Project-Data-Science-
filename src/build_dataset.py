@@ -49,9 +49,12 @@ def covered_cells(index):
     The series' own cadence is the FINEST spacing seen among the previous 48 gaps (plus the next
     gap if it is 30 minutes or less). Using the finest nearby spacing means a single missing
     30-minute slot (a 60-minute gap) can never be mistaken for an hourly series and filled with
-    the previous value. Gaps longer than 60 minutes are missing data and stay empty. Every raw
-    file here changes resolution at most once, from coarse to fine (profiled in
-    frequency_by_file_year.csv), so this rule loses no data at the switch.
+    the previous value. Gaps longer than 60 minutes are missing data and stay empty. Every file
+    that feeds the modelling table changes resolution at most once, from coarse to fine (checked
+    in the audit), so this rule loses no data at the switch. Known limits, ex-post table only:
+    physical_flows_*_IT_NORD go 15-minute on 30 Dec 2024 and back to hourly on 31 Dec, so that
+    day stays blank for them; the balancing-price files change resolution many times, so a slot
+    is left blank when only one of its two quarter-hours has a price.
     """
     t = index.to_series()
     gap = ((t - t.shift(1)) / pd.Timedelta("1min")).to_numpy()  # minutes to the previous row
