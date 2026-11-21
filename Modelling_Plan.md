@@ -182,3 +182,7 @@ Method: every column was rebuilt from the raw CSVs by methods different from the
 2. The balancing-price columns are blank where only one of the slot's two quarter-hours has a price: 5 to 23 slots for FCR, RR and aFRR, about 150 for each mFRR direction.
 3. Two imbalance-price slots (2021-01-10 11:30 and 2023-11-24 13:30) sit next to missing rows; the raw file has no row for them and the table correctly leaves them blank.
 4. The raw files carry no publication times, so "known before delivery" for the day-ahead forecasts and schedules rests on their labels.
+
+## 14. Change to the ex-post table (2026-11-21, at Vivek's request)
+
+`expost_table.csv` now has 68,325 rows instead of 70,128. Slots were removed where the load forecast error is missing (70 slots) or `S_long` is missing (1,734 slots; 1 slot is in both lists), 1,803 in total. A new column `load_forecast` (the day-ahead load forecast, MW, placed right after `actual_load`) was added, so `load_forecast_error = actual_load - load_forecast` can be checked directly. Only the ex-post table changed. `modelling_table.csv` and `design_matrix.csv` are byte-identical to before, and the modelling table keeps its full regular 30-minute grid. Because rows were removed, the ex-post table no longer has a regular 30-minute step. Kept rows by split: train 34,401, validation 16,443, test 17,481.

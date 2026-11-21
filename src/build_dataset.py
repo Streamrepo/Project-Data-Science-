@@ -171,6 +171,7 @@ def build_modelling_table():
 def build_expost_table(modelling):
     ex = pd.DataFrame(index=SLOTS)
     ex["actual_load"] = slots_from("actual_load_fr")
+    ex["load_forecast"] = modelling["load_forecast"]  # day-ahead forecast matching each actual_load
     gen = pd.read_csv(RAW / "generation_actual_fr.csv", header=[0, 1], index_col=0)
     gen.index = pd.to_datetime(gen.index, utc=True)
     for tech, kind in gen.columns:
@@ -196,6 +197,12 @@ def build_expost_table(modelling):
     ex["solar_forecast_error"] = ex["gen_solar"] - modelling["solar_forecast"]
     keep = modelling[["datetime_paris", "split", "S_short", "S_long", "Y_short", "Y_long"]]
     ex = keep.join(ex)
+    # Ex-post table only: keep slots that have both a load forecast error and S_long.
+    no_error, no_s_long = ex["load_forecast_error"].isna(), ex["S_long"].isna()
+    print(f"expost_table: removed {int((no_error | no_s_long).sum())} of {len(ex)} slots "
+          f"(missing load forecast error: {int(no_error.sum())}, missing S_long: "
+          f"{int(no_s_long.sum())}, both: {int((no_error & no_s_long).sum())})")
+    ex = ex[~(no_error | no_s_long)]
     ex.index.name = "datetime"
     return ex
 
