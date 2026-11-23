@@ -7,7 +7,7 @@ from entsoe import EntsoePandasClient  # Connect to ENTSO-E.
 
 
 # 1. Load your API key and prepare the API client.
-base = Path(__file__).resolve().parent  # Folder containing this script.
+base = Path(__file__).resolve().parents[2]  # Project root (two levels above this file).
 load_dotenv(base / ".env")  # Load settings from your project's .env.
 
 client = EntsoePandasClient(

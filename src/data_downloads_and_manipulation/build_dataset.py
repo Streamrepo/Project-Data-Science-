@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 RAW = ROOT / "Data" / "Raw" / "ENSTOE"
 OUT = ROOT / "Data" / "Processed"
 
@@ -160,8 +160,8 @@ def build_modelling_table():
 def add_labels(df, use):
     """Training-only q90 thresholds from the slots in `use`, then fixed for every slot and split.
 
-    `use` is the clean data: slots that have S_long and the load, wind onshore and solar
-    forecast errors. Slots outside it still get labels (if S exists) but do not influence q90.
+    `use` is the clean data: slots that have S_long, the load, wind onshore and solar
+    forecast errors, and scheduled imports. Slots outside it still get labels (if S exists) but do not influence q90.
     """
     train = (df["split"] == "train") & use
     thresholds = {"q90_short": float(df.loc[train, "S_short"].quantile(0.9)),
@@ -204,11 +204,14 @@ def build_expost_table(modelling):
     for actual, forecast in (("gen_wind_onshore", "wind_onshore_forecast"),
                              ("gen_solar", "solar_forecast")):
         ex.insert(ex.columns.get_loc(actual) + 1, forecast, modelling[forecast])
-    # Clean data: slots that have S_long and the load, wind onshore and solar forecast errors.
+    # Clean data: slots that have S_long, the load, wind onshore and solar forecast errors,
+    # and scheduled (and so net scheduled) imports.
     reasons = {"load forecast error": ex["load_forecast_error"].isna(),
                "S_long": modelling["S_long"].isna(),
                "wind onshore forecast error": ex["wind_onshore_forecast_error"].isna(),
-               "solar forecast error": ex["solar_forecast_error"].isna()}
+               "solar forecast error": ex["solar_forecast_error"].isna(),
+               "scheduled imports": modelling[["scheduled_imports",
+                                               "net_scheduled_imports"]].isna().any(axis=1)}
     drop = pd.concat(reasons, axis=1).any(axis=1)
     print(f"expost_table: removed {int(drop.sum())} of {len(ex)} slots; missing per reason "
           + ", ".join(f"{k}: {int(v.sum())}" for k, v in reasons.items()))
@@ -318,7 +321,8 @@ def main():
     assert paris[table["split"] == "validation"].max() < paris[table["split"] == "test"].min()
     assert len(expost) == int(use.sum()) and expost.index.equals(clean_table.index)
     core = ["day_ahead_price", "price_long", "price_short", "load_forecast", "wind_onshore_forecast",
-            "solar_forecast", "D_short", "D_long", "S_short", "S_long", "Y_short", "Y_long"]
+            "solar_forecast", "scheduled_imports", "scheduled_exports", "net_scheduled_imports",
+            "D_short", "D_long", "S_short", "S_long", "Y_short", "Y_long"]
     assert clean_table[core].notna().all().all(), "gaps left in the clean modelling table"
 
     x_cols = X_REQUIRED + ["wind_offshore_forecast"]

@@ -2,7 +2,7 @@
 
 **Source:** `French_Electricity_Project_Modelling_Brief (1).pdf` (8 pages). Sections 1 to 9 follow the brief. Section 10 is my addition from profiling the raw data, and section 11 lists decisions the brief leaves open. Both are labelled as not coming from the brief.
 
-**Status (2026-11-21): data processing (sections 3 to 8) is done by `src/build_dataset.py` and written to `Data/Processed/`; see section 12. No model has been fitted. Waiting for Vivek's instruction before the logistic regressions or anything later.**
+**Status (2026-11-23, branch `Lucs-Magic-Tree`): data processing (sections 3 to 8) is done by `src/data_downloads_and_manipulation/build_dataset.py` and written to `Data/Processed/`; see sections 12 to 19. Model 1, the two logistic regressions, is fitted and evaluated (section 20), and the report notebook `report/report.ipynb` describes the data and the model (section 21). Models 2 to 4 (HMM, XGBoost) are not started.**
 
 **Scope:** ENTSO-E France, 1 January 2021 to 31 December 2024.
 **Objective:** build a reproducible, leakage-safe processed dataset, then fit interpretable baseline models for short-side and long-side settlement stress.
@@ -128,13 +128,13 @@ These are not in the brief. They come from profiling `Data/Raw/ENSTOE/`.
 4. **Evaluation metrics** are not specified. Suggestion: ROC-AUC, average precision (PR-AUC), Brier score and log-loss, each reported against the base rate for the split, plus precision among the top-scoring 10% of intervals.
 5. **Regularisation and class weights** are not specified. Suggestion: L2 penalty with strength chosen on 2023 only, and unweighted as the primary model.
 6. **Collinear predictors:** keep `net_scheduled_imports` and `residual_load_forecast` in the table but leave them out of the first fitted matrix, or include them with regularisation?
-7. **2025 data:** downloading it needs the API key and a changed `end` date in `download_entsoe.py`. The brief says to do this later.
+7. **2025 data:** downloading it needs the API key and a changed `end` date in `src/data_downloads_and_manipulation/download_entsoe.py`. The brief says to do this later.
 
 ## 12. Result of the data-processing stage (2026-11-21)
 
 *Superseded in part by section 16: the thresholds, the split table and the design-matrix row counts below were recomputed on the clean data.*
 
-Run with `.venv/bin/python src/build_dataset.py` (about 5 seconds, reproducible: two runs give identical files, raw files untouched).
+Run with `.venv/bin/python src/data_downloads_and_manipulation/build_dataset.py` (about 5 seconds, reproducible: two runs give identical files, raw files untouched).
 
 | Output in `Data/Processed/` | Content |
 |---|---|
@@ -221,3 +221,35 @@ Checked: the thresholds equal the 90th percentile of the clean training slots (i
 The earlier default (section 11, item 2) filled `wind_offshore_forecast` with 0 before its first report on 2023-08-06. That is removed: the column is now blank wherever the raw file is blank (all of 2021-22 and 58% of 2023; 43,669 of the 67,971 modelling-table slots), and only a genuine reported 0 stays 0 (856 slots). A code search found no other place that fills blanks with zero. The other fills are not zeros: forecasts are carried forward at most 4 slots (2 hours), and border totals are blank if any of the 6 borders is blank.
 
 Knock-on effects: `residual_load_forecast` subtracts offshore wind, so it is now blank in the same 43,669 slots and blank for the whole training period; the scaler records it as all-missing in training and the design matrix no longer contains it. `wind_offshore_forecast` is still not in the design matrix (blank in training). It is also no longer a required predictor when counting usable rows, so the design matrix keeps 67,927 rows. Thresholds, labels and the ex-post table are unchanged.
+
+## 19. Rows without scheduled imports removed (2026-11-23, branch `Lucs-Magic-Tree`)
+
+`scheduled_imports` and `net_scheduled_imports` were blank in the same 44 slots: one block on 3 February 2021, 01:00 to 22:30 UTC (02:00 to 23:30 Paris), all in training. Exports had no gaps. The clean-data rule in `build_dataset.py` now also requires scheduled imports, so these slots are removed from `modelling_table.csv` and `expost_table.csv` (67,927 rows each: train 34,053, validation 16,393, test 17,481), and the pipeline fails if `scheduled_imports`, `scheduled_exports` or `net_scheduled_imports` has a gap. Because the thresholds use the clean training slots, they moved slightly: `q90_short` 77.824 to **77.860**, `q90_long` 78.218 to **78.268** (supersedes section 16). 13 labels flipped (5 `Y_short`, 8 `Y_long`); the training positive rate is still exactly 10%. `design_matrix.csv` keeps the same 67,927 rows and identical predictors, and `scaler.json` is unchanged. An independent recompute of q90 from the training rows of `modelling_table.csv` gives exactly the saved values, and every label equals `S > q90`.
+
+The scripts were also reorganised: data scripts are in `src/data_downloads_and_manipulation/` (`build_dataset.py`, `download_entsoe.py`, `download_balancing.py`, `test.py`), models in `src/models/`, and a rebuild from the new location gives byte-identical outputs.
+
+## 20. Model 1: logistic regressions for severe stress (2026-11-23)
+
+Code: `src/models/model_1_logistic_regression.py`; outputs in `results/model_1/` (`metrics.csv`, `coefficients.csv`, `c_search.csv`).
+
+* **Response:** `Y_short = 1 if S_short > q90_short` and `Y_long = 1 if S_long > q90_long` (q90 from 2021-22 only, fixed). One model per side.
+* **Explanatory variables (17), all known after the day-ahead auction:** `day_ahead_price`, `load_forecast`, `wind_onshore_forecast`, `solar_forecast`, `scheduled_imports`, `scheduled_exports` (z-scored on training), `hour_sin`, `hour_cos`, day-of-week dummies (Monday reference), season dummies (winter reference).
+* **Left out:** `net_scheduled_imports` (exactly imports minus exports), `wind_offshore_forecast` and `residual_load_forecast` (blank throughout training), and every realised same-period variable.
+* **Settings (section 11 items 4 to 6):** L2 penalty, C chosen on 2023 by PR-AUC from 1e-5 to 100 (chosen: 100 for short, 0.001 for long), unweighted classes, fitted on 2021-22 only.
+
+| Target | Split | Base rate | ROC-AUC | PR-AUC | Brier (model / constant) | Precision in top 10% |
+|---|---|---|---|---|---|---|
+| Y_short | train | 0.100 | 0.715 | 0.206 | 0.085 / 0.090 | 0.252 |
+| Y_short | validation 2023 | 0.072 | 0.605 | 0.101 | 0.066 / 0.067 | 0.124 |
+| Y_short | test 2024 | 0.104 | 0.532 | 0.113 | 0.098 / 0.093 | 0.120 |
+| Y_long | train | 0.100 | 0.798 | 0.298 | 0.080 / 0.090 | 0.347 |
+| Y_long | validation 2023 | 0.053 | 0.595 | 0.077 | 0.050 / 0.052 | 0.089 |
+| Y_long | test 2024 | 0.081 | 0.582 | 0.102 | 0.076 / 0.075 | 0.110 |
+
+"Constant" always predicts the training positive rate. Out of sample the model ranks intervals only slightly better than chance and its Brier score on 2024 is worse than the constant, so day-ahead fundamentals alone carry little stable information about severe stress; the positive rate itself also shifts between years. Largest coefficients: for `Y_short`, scheduled exports (-0.46 per SD), scheduled imports (+0.39) and wind onshore (+0.27); for `Y_long`, the day-ahead price (+0.56 per SD), which is partly mechanical because `S_long = P_DA - P_long` contains the day-ahead price.
+
+## 21. Report notebook (2026-11-23)
+
+`report/report.ipynb` (executed, outputs saved) contains: (1) the economic meaning of `S_short` (extra cost of being short, high when the system is short) and `S_long` (revenue lost when long, high when the system is long); (2) their distributions; (3) the Model 1 response and explanatory variables; (4) a recompute of the q90 thresholds on the clean data, matching `thresholds.json`; (5) counts of `Y = 1`: `Y_short` 3,405 / 1,176 / 1,811 (train / 2023 / 2024, 6,392 in total), `Y_long` 3,406 / 868 / 1,410 (5,684 in total); (6) the relation between the two stresses; (7) a diagram of Model 1.
+
+Findings from (6): `S_short + S_long = P_short - P_long`, a spread that is never negative (median 9.68 EUR/MWh), so the two stresses are near mirror images (Pearson -0.988, Spearman -0.956). Both are severe at once in only 2 slots, on 4 April 2022 at 07:30 and 08:30 Paris time (day-ahead price about 2,700 to 3,000 EUR/MWh). When only one side is severe, the other is on average 217.03 EUR/MWh (short severe) or 202.52 EUR/MWh (long severe) below its own q90, and never closer than 74.01.

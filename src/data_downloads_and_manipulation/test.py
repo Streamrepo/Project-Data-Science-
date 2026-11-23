@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from entsoe import EntsoePandasClient
 from requests.exceptions import HTTPError
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 api_key = os.getenv("ENTSOE_API_KEY")
 
 if not api_key:

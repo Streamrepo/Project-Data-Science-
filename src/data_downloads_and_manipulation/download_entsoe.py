@@ -4,7 +4,7 @@ import pandas as pd  # Create dates with a timezone.
 from dotenv import load_dotenv  # Load settings from .env.
 from entsoe import EntsoePandasClient  # Request ENTSO-E data as pandas tables.
 
-base = Path(__file__).resolve().parent  # Locate this script's folder.
+base = Path(__file__).resolve().parents[2]  # Project root (two levels above this file).
 load_dotenv(base / ".env")  # Read your project's .env file.
 client = EntsoePandasClient(api_key=os.environ["ENTSOE_API_KEY"], timeout=60)  # Connect using your key.
 start = pd.Timestamp("2021-01-01", tz="Europe/Paris")  # First date to download.
