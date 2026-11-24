@@ -1,4 +1,4 @@
-"""Model 1 (Modelling_Plan.md section 9): two separate logistic regressions that predict whether
+"""Model 1 (notes/Modelling_Plan.md section 9): two separate logistic regressions that predict whether
 the stress S is above its training-only 90th percentile:
 
     Y_short = 1 if S_short > q90_short   (S_short = P_short - P_DA)
