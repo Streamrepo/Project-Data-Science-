@@ -167,7 +167,10 @@ def add_labels(df, use):
                   "q90_long": float(df.loc[train, "S_long"].quantile(0.9))}
     for side in ("short", "long"):
         s = df[f"S_{side}"]
-        df[f"Y_{side}"] = (s > thresholds[f"q90_{side}"]).astype("Int8").where(s.notna())
+        # Strictly above the cut-off. Rounding to 6 decimals removes floating-point noise, so a
+        # value equal to the threshold (the cut-off is often an observed value) is never severe.
+        severe = s.round(6) > round(thresholds[f"q90_{side}"], 6)
+        df[f"Y_{side}"] = severe.astype("Int8").where(s.notna())
     return thresholds
 
 
