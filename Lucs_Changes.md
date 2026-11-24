@@ -13,3 +13,5 @@ Changes on the `Lucs-Magic-Tree` branch that Luc has confirmed. Each entry is a 
 | 2026-11-23 | Added Model 1 (`src/models/model_1_logistic_regression.py`): two L2 logistic regressions for S_short/S_long above q90 on 17 day-ahead inputs; test ROC-AUC 0.53 short, 0.58 long. |
 | 2026-11-23 | Filled `report/report.ipynb`: economic reasoning for S, distributions, Model 1 inputs/response, recomputed q90 check, Y = 1 counts, S_short/S_long correlation (-0.99) and a model diagram. |
 | 2026-11-23 | Added Model 1 and report sections (19-21) to `Modelling_Plan.md` and updated its status line. |
+| 2026-11-24 | Added a "Data Downloading" section to the start of `report/report.ipynb`: API access request, the three `src` scripts, the monthly balancing-price download, and short tables of raw and processed datasets. |
+| 2026-11-24 | Split `report/report.ipynb` into 7 sections (research question, data downloading, data transformation, descriptive analysis, models, results and limitations, conclusion), with new transformation, limitations and draft conclusion text. |
