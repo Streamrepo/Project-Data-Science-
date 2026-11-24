@@ -45,11 +45,9 @@ def half_hourly(series):
     # A lone long gap does not turn a half-hourly observation into an hourly one.
     gaps = series.index.to_series().diff() / pd.Timedelta("1min")
     gaps = gaps.where(gaps.isin((15, 30, 60)))
-    following_gap = gaps.shift(-1)
-    recent_cadence = gaps.rolling(48, min_periods=1).min()
-    # A shorter next timestamp marks a cadence switch. It supplies no future forecast value.
-    cadence = np.fmin(recent_cadence, following_gap.where(following_gap <= 30))
-    quarters = (cadence.fillna(following_gap).ffill().bfill() / 15).astype(int).to_numpy()
+    # Cadence comes from past gaps only (the finest of the previous 48), as in build_dataset.
+    cadence = gaps.rolling(48, min_periods=1).min()
+    quarters = (cadence.ffill().bfill() / 15).round().astype(int).replace(3, 4).to_numpy()
 
     # An observation covers consecutive quarters. Both quarters must exist for a half-hour mean.
     first = ((series.index - START) // QUARTER).to_numpy()

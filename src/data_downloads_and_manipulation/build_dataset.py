@@ -46,8 +46,8 @@ def read_raw(name, **kwargs):
 def covered_cells(index):
     """Number of 15-minute cells each observation covers (1, 2 or 4).
 
-    The series' own cadence is the FINEST spacing seen among the previous 48 gaps (plus the next
-    gap if it is 30 minutes or less). Using the finest nearby spacing means a single missing
+    The series' own cadence is the FINEST spacing seen among the previous 48 gaps (the gap
+    to the previous row included; nothing after the row is used). Using the finest nearby spacing means a single missing
     30-minute slot (a 60-minute gap) can never be mistaken for an hourly series and filled with
     the previous value. Gaps longer than 60 minutes are missing data and stay empty. Every file
     that feeds the modelling table changes resolution at most once, from coarse to fine (checked
@@ -62,14 +62,12 @@ def covered_cells(index):
     n = len(gap)
     padded = np.concatenate([[np.nan] * 47, gap])
     back = np.lib.stride_tricks.sliding_window_view(padded, 48)[:n]  # gaps i-47 .. i
-    nxt = np.concatenate([gap[1:], [np.nan]])
-    nxt = np.where(nxt <= 30, nxt, np.nan)
     with np.errstate(all="ignore"):
-        cadence = np.fmin(np.nanmin(np.where(np.isnan(back), np.inf, back), axis=1), nxt)
+        cadence = np.nanmin(np.where(np.isnan(back), np.inf, back), axis=1)  # past gaps only
     cadence = np.where(np.isinf(cadence), np.nan, cadence)
-    fallback = np.concatenate([gap[1:], [np.nan]])  # lone rows: use the next gap if usable
-    cadence = np.where(np.isnan(cadence), fallback, cadence)
-    cadence = pd.Series(cadence).ffill().bfill().to_numpy()
+    # Carry the last known cadence forward. bfill only touches the first rows of a file, which
+    # have no past gap at all (in 2021, the training period); it never reaches into a later split.
+    cadence = pd.Series(cadence).ffill().bfill().to_numpy().copy()
     cells = np.rint(cadence / 15).astype(int)
     return np.where(cells == 3, 4, cells)
 
@@ -160,8 +158,9 @@ def build_modelling_table():
 def add_labels(df, use):
     """Training-only q90 thresholds from the slots in `use`, then fixed for every slot and split.
 
-    `use` is the clean data: slots that have S_long, the load, wind onshore and solar
-    forecast errors, and scheduled imports. Slots outside it still get labels (if S exists) but do not influence q90.
+    `use` is the modelling cohort: slots whose day-ahead predictors and both stress scores S exist.
+    It is defined from information available at the forecast cutoff plus the target itself; it
+    never depends on post-delivery actuals (load, wind, solar). Other slots do not influence q90.
     """
     train = (df["split"] == "train") & use
     thresholds = {"q90_short": float(df.loc[train, "S_short"].quantile(0.9)),
@@ -294,7 +293,12 @@ def main():
     frequency_audit().to_csv(OUT / "frequency_by_file_year.csv", index=False)
     raw, table = build_modelling_table()
     expost_all, drop = build_expost_table(table)
-    use = ~drop  # the clean data: all quantities below are computed on these slots
+    # Modelling cohort: day-ahead predictors present and both targets observed. Deliberately NOT
+    # filtered on post-delivery actuals (actual load/wind/solar): that would let the future decide
+    # which rows are trained on, and move the q90 thresholds. `drop` only describes the ex-post table.
+    use = (table[X_REQUIRED].notna().all(axis=1) & table[["S_short", "S_long"]].notna().all(axis=1))
+    print(f"slots lacking post-delivery actuals (kept in the model, blank in the ex-post table): "
+          f"{int((drop & use).sum())}")
     thresholds = add_labels(table, use)
     table["in_clean_data"] = use
     expost = table.loc[use, ["datetime_paris", "split", "S_short", "S_long", "Y_short",

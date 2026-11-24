@@ -1,17 +1,17 @@
 {
   "day_ahead_price": {
-    "mean": 194.42942325198953,
-    "sd": 145.38253497957675,
+    "mean": 194.52580663129197,
+    "sd": 145.3724481017973,
     "all_missing_in_train": false
   },
   "load_forecast": {
-    "mean": 51883.027457199074,
-    "sd": 11603.725668033423,
+    "mean": 51904.940752250004,
+    "sd": 11619.542948356413,
     "all_missing_in_train": false
   },
   "wind_onshore_forecast": {
-    "mean": 4065.1951202537225,
-    "sd": 2991.381257076263,
+    "mean": 4063.1981551405706,
+    "sd": 2991.235813348249,
     "all_missing_in_train": false
   },
   "wind_offshore_forecast": {
@@ -20,23 +20,23 @@
     "all_missing_in_train": true
   },
   "solar_forecast": {
-    "mean": 1897.933469885179,
-    "sd": 2684.4967104157818,
+    "mean": 1897.918088886283,
+    "sd": 2683.399254968561,
     "all_missing_in_train": false
   },
   "scheduled_imports": {
-    "mean": 5537.4877778756645,
-    "sd": 3445.099995230843,
+    "mean": 5539.687095071971,
+    "sd": 3444.0058287538504,
     "all_missing_in_train": false
   },
   "scheduled_exports": {
-    "mean": 7059.84803982028,
-    "sd": 3500.448268469967,
+    "mean": 7056.329011169418,
+    "sd": 3500.0950673809534,
     "all_missing_in_train": false
   },
   "net_scheduled_imports": {
-    "mean": -1522.3602619446153,
-    "sd": 6413.178849243655,
+    "mean": -1516.6419160974467,
+    "sd": 6411.928469381617,
     "all_missing_in_train": false
   },
   "residual_load_forecast": {

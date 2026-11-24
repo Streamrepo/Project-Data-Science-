@@ -72,7 +72,13 @@ def main():
     df = pd.read_csv(PROCESSED / "design_matrix.csv", index_col=0)
     q90 = json.loads((PROCESSED / "thresholds.json").read_text())
     assert df[FEATURES + TARGETS].notna().all().all(), "gaps in the design matrix"
-    assert not any(c.startswith(("S_", "D_", "Y_", "price")) for c in FEATURES), "leakage"
+    # Whitelist: every feature must be a day-ahead input or a calendar term. Nothing observed
+    # after delivery (S_*, D_*, Y_*, imbalance/balancing prices, actuals) may enter the model.
+    day_ahead = {"day_ahead_price_z", "load_forecast_z", "wind_onshore_forecast_z",
+                 "solar_forecast_z", "scheduled_imports_z", "scheduled_exports_z"}
+    calendar = {"hour_sin", "hour_cos", *(f"dow_{d}" for d in range(1, 7)),
+                "season_spring", "season_summer", "season_autumn"}
+    assert set(FEATURES) <= day_ahead | calendar, "feature outside the day-ahead whitelist"
     part = {s: df[df["split"] == s] for s in SPLITS}
     OUT.mkdir(parents=True, exist_ok=True)
 
