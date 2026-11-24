@@ -1,18 +1,27 @@
-"""Model 2 adds filtered market-regime probabilities to the Model 1 inputs.
+"""Model 2 classifies short and long stress with logistic regression and HMM features.
 
 Run from the repository root with `python -m src.models.model_2_logistic_hmm`.
 """
 
+import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, log_loss
 
-from ..data_downloads_and_manipulation.build_dataset import build_day_ahead_table
-from .model_1_logistic_regression import FEATURES, PROCESSED, ROOT, run_logistic_models
+from .model_234_common import DESIGN_MATRIX, FEATURES, RAW, ROOT, SPLITS, TARGETS, evaluate
 
 OUT = ROOT / "results" / "model_2"
+MARKET_TZ = "Europe/Paris"
+START = pd.Timestamp("2021-01-01", tz=MARKET_TZ).tz_convert("UTC")
+END = pd.Timestamp("2025-01-01", tz=MARKET_TZ).tz_convert("UTC")
+SLOTS = pd.date_range(START, END, freq="30min", inclusive="left", name="datetime")
+QUARTER = pd.Timedelta("15min")
+BORDERS = ["BE", "DE_LU", "CH", "IT_NORD", "ES", "GB"]
 HMM_INPUTS = [
     "day_ahead_price",
     "load_forecast",
@@ -23,6 +32,63 @@ HMM_INPUTS = [
 ]
 N_REGIMES = 3
 HMM_SEEDS = (42, 43, 44)
+C_GRID = (1e-5, 1e-4, 1e-3, 0.01, 0.1, 1.0, 10.0, 100.0)
+
+
+def half_hourly(series):
+    """Align raw day-ahead observations to the baseline's half-hour grid."""
+    series = pd.to_numeric(series, errors="coerce").dropna()
+    series = series[~series.index.duplicated(keep="last")].sort_index()
+    series = series[(series.index >= START) & (series.index < END)]
+
+    # Follow the baseline's cadence rule for hourly, half-hourly and quarter-hourly products.
+    # A lone long gap does not turn a half-hourly observation into an hourly one.
+    gaps = series.index.to_series().diff() / pd.Timedelta("1min")
+    gaps = gaps.where(gaps.isin((15, 30, 60)))
+    following_gap = gaps.shift(-1)
+    recent_cadence = gaps.rolling(48, min_periods=1).min()
+    # A shorter next timestamp marks a cadence switch. It supplies no future forecast value.
+    cadence = np.fmin(recent_cadence, following_gap.where(following_gap <= 30))
+    quarters = (cadence.fillna(following_gap).ffill().bfill() / 15).astype(int).to_numpy()
+
+    # An observation covers consecutive quarters. Both quarters must exist for a half-hour mean.
+    first = ((series.index - START) // QUARTER).to_numpy()
+    offsets = np.arange(quarters.sum()) - np.repeat(np.cumsum(quarters) - quarters, quarters)
+    positions = np.repeat(first, quarters) + offsets
+    quarter_values = np.full(2 * len(SLOTS), np.nan)
+    inside = positions < len(quarter_values)
+    quarter_values[positions[inside]] = np.repeat(series.to_numpy(float), quarters)[inside]
+    return pd.Series(quarter_values.reshape(-1, 2).mean(axis=1), index=SLOTS)
+
+
+def load_day_ahead(raw_dir):
+    """Read the six HMM predictors on a complete grid before selecting any labelled rows."""
+    def read(name):
+        frame = pd.read_csv(raw_dir / f"{name}.csv", index_col=0)
+        frame.index = pd.to_datetime(frame.index, utc=True)
+        return frame.sort_index()
+
+    renewables = read("renewables_forecast_fr")
+    imports = pd.concat([half_hourly(read(f"scheduled_{border}_FR").iloc[:, 0])
+                         for border in BORDERS], axis=1)
+    exports = pd.concat([half_hourly(read(f"scheduled_FR_{border}").iloc[:, 0])
+                         for border in BORDERS], axis=1)
+    day_ahead = pd.DataFrame({
+        "day_ahead_price": half_hourly(read("day_ahead_prices_fr").iloc[:, 0]),
+        "load_forecast": half_hourly(read("load_forecast_fr").iloc[:, 0]),
+        "wind_onshore_forecast": half_hourly(renewables["Wind Onshore"]),
+        "solar_forecast": half_hourly(renewables["Solar"]),
+        "scheduled_imports": imports.sum(axis=1, min_count=len(BORDERS)),
+        "scheduled_exports": exports.sum(axis=1, min_count=len(BORDERS)),
+    })
+    # Carry forward available forecasts for at most two hours, as in the original dataset.
+    # Total schedules require all borders and the day-ahead price stays missing when unavailable.
+    forecasts = HMM_INPUTS[1:]
+    day_ahead[forecasts] = day_ahead[forecasts].ffill(limit=4)
+    day_ahead["split"] = SLOTS.tz_convert(MARKET_TZ).year.map(
+        {2021: "train", 2022: "train", 2023: "validation", 2024: "test"}
+    )
+    return day_ahead
 
 
 def filter_regimes(hmm, observations):
@@ -115,11 +181,55 @@ def add_regime_features(matrix, day_ahead):
     return matrix.join(probabilities, validate="one_to_one"), regime_features, summary
 
 
+def run_logistic_models(matrix, features, out):
+    """Fit the baseline logistic specification with two additional regime probabilities."""
+    if matrix[[*features, *TARGETS]].isna().any().any():
+        raise ValueError("Missing predictors or targets in the modelling matrix.")
+    splits = {split: matrix.loc[matrix["split"] == split] for split in SPLITS}
+    predictors = {split: frame[features].to_numpy() for split, frame in splits.items()}
+    metrics, search, coefficients = [], [], {}
+    for target in TARGETS:
+        labels = {split: frame[target].to_numpy(int) for split, frame in splits.items()}
+        train_rate = float(labels["train"].mean())
+        best_score = -np.inf
+        # C is the inverse L2 penalty strength. Choose it by 2023 average precision.
+        # Every candidate fits on 2021–2022 only, and the 2024 test does not select the model.
+        for c in C_GRID:
+            model = LogisticRegression(C=c, solver="lbfgs", max_iter=5000)
+            model.fit(predictors["train"], labels["train"])
+            scores = model.predict_proba(predictors["validation"])[:, 1]
+            average_precision = average_precision_score(labels["validation"], scores)
+            search.append({
+                "target": target, "C": c, "val_pr_auc": average_precision,
+                "val_log_loss": log_loss(labels["validation"], scores, labels=[0, 1]),
+            })
+            if average_precision > best_score:
+                best_model, best_score = model, average_precision
+
+        for split in SPLITS:
+            scores = best_model.predict_proba(predictors[split])[:, 1]
+            metrics.append({
+                "target": target, "split": split, "C": best_model.C,
+                **evaluate(labels[split], scores, train_rate),
+            })
+        coefficients[target] = np.r_[best_model.intercept_, best_model.coef_[0]]
+
+    # The coefficient table expresses conditional effects on log-odds.
+    out.mkdir(parents=True, exist_ok=True)
+    results = pd.DataFrame(metrics)
+    results.to_csv(out / "metrics.csv", index=False)
+    pd.DataFrame(search).to_csv(out / "c_search.csv", index=False)
+    pd.DataFrame(coefficients, index=["intercept", *features]).to_csv(out / "coefficients.csv")
+    print(results.round(4).to_string(index=False))
+
+
 def main():
-    matrix = pd.read_csv(PROCESSED / "design_matrix.csv", index_col=0)
-    _, day_ahead = build_day_ahead_table()
-    matrix, regime_features, summary = add_regime_features(matrix, day_ahead)
-    # Use the baseline logistic protocol so the comparison measures the addition of regime features.
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--design-matrix", type=Path, default=DESIGN_MATRIX)
+    parser.add_argument("--raw-dir", type=Path, default=RAW)
+    args = parser.parse_args()
+    matrix = pd.read_csv(args.design_matrix, index_col=0)
+    matrix, regime_features, summary = add_regime_features(matrix, load_day_ahead(args.raw_dir))
     run_logistic_models(matrix, FEATURES + regime_features, OUT)
     (OUT / "regimes.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 

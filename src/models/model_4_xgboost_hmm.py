@@ -9,10 +9,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..data_downloads_and_manipulation.build_dataset import RAW, build_day_ahead_table
-from .model_1_logistic_regression import FEATURES, ROOT
-from .model_2_logistic_hmm import add_regime_features
-from .model_3_xgboost import DESIGN_MATRIX, run_xgboost_models
+from .model_234_common import DESIGN_MATRIX, FEATURES, RAW, ROOT
+from .model_2_logistic_hmm import add_regime_features, load_day_ahead
+from .model_3_xgboost import run_xgboost_models
 
 OUT = ROOT / "results" / "model_4"
 
@@ -25,8 +24,8 @@ def main():
                         help="Directory containing the 2021–2024 day-ahead ENTSO-E CSVs")
     args = parser.parse_args()
     matrix = pd.read_csv(args.design_matrix, index_col=0)
-    _, day_ahead = build_day_ahead_table(args.raw_dir)
-    # Model 2 supplies the features, and Model 3 supplies the identical search and scoring protocol.
+    day_ahead = load_day_ahead(args.raw_dir)
+    # Change only the inputs relative to Model 3 so the comparison isolates the addition of regimes.
     matrix, regime_features, summary = add_regime_features(matrix, day_ahead)
     run_xgboost_models(matrix, FEATURES + regime_features, OUT)
     (OUT / "regimes.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

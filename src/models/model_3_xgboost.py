@@ -1,4 +1,4 @@
-"""Model 3 fits two XGBoost classifiers on the Model 1 fundamentals.
+"""Model 3 predicts each severe-stress event with boosted trees and day-ahead fundamentals.
 
 Run from the repository root with `python -m src.models.model_3_xgboost`.
 """
@@ -11,28 +11,28 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, log_loss
 from xgboost import XGBClassifier
 
-from .model_1_logistic_regression import FEATURES, PROCESSED, ROOT, SPLITS, TARGETS, evaluate
+from .model_234_common import DESIGN_MATRIX, FEATURES, ROOT, SPLITS, TARGETS, evaluate
 
 OUT = ROOT / "results" / "model_3"
-DESIGN_MATRIX = PROCESSED / "design_matrix.csv"
-PARAMETER_GRID = tuple(product((2, 3, 5), (0.03, 0.1), (100, 300)))
+DEPTHS = (2, 3, 5)
+LEARNING_RATES = (0.03, 0.1)
+TREE_COUNTS = (100, 300)
 
 
 def run_xgboost_models(matrix, features, out):
-    """Select each classifier on validation average precision and score each split."""
-    if matrix[features + TARGETS].isna().any().any():
+    """Train on 2021–2022 and choose the settings for each target on 2023 alone."""
+    if matrix[[*features, *TARGETS]].isna().any().any():
         raise ValueError("Missing predictors or targets in the design matrix")
 
-    # Reuse the baseline rows and chronological split. The input already contains training-scaled features.
+    # The processed matrix fixes the original rows, thresholds and chronological split.
     parts = {split: matrix.loc[matrix["split"] == split] for split in SPLITS}
     predictors = {split: part[features] for split, part in parts.items()}
     metrics, search, importance = [], [], {}
     for target in TARGETS:
         labels = {split: part[target].to_numpy(int) for split, part in parts.items()}
-        train_rate = labels["train"].mean()
         best_score = -float("inf")
-        # Boosted trees capture thresholds and interactions. Rank candidates using 2023 AP only.
-        for depth, rate, trees in PARAMETER_GRID:
+        # Depth controls interactions, while shrinkage and tree count control the ensemble fit.
+        for depth, rate, trees in product(DEPTHS, LEARNING_RATES, TREE_COUNTS):
             params = {"max_depth": depth, "learning_rate": rate, "n_estimators": trees}
             model = XGBClassifier(
                 **params,
@@ -43,6 +43,7 @@ def run_xgboost_models(matrix, features, out):
                 n_jobs=1,
             ).fit(predictors["train"], labels["train"])
             probabilities = model.predict_proba(predictors["validation"])[:, 1].astype(float)
+            # Average precision rewards ranking rare severe intervals ahead of ordinary ones.
             score = average_precision_score(labels["validation"], probabilities)
             search.append({
                 "target": target,
@@ -54,7 +55,8 @@ def run_xgboost_models(matrix, features, out):
                 best_score, best_model, best_params = score, model, params
                 validation_probabilities = probabilities
 
-        # Evaluate the selected model on each split. Proper scores also compare against the train rate.
+        # Score the selected training fit, including the held-out 2024 test and the constant benchmark.
+        train_rate = labels["train"].mean()
         for split in SPLITS:
             probabilities = (validation_probabilities if split == "validation"
                              else best_model.predict_proba(predictors[split])[:, 1].astype(float))
@@ -74,7 +76,6 @@ def run_xgboost_models(matrix, features, out):
         out / "feature_importance.csv"
     )
     print(metrics.round(4).to_string(index=False))
-    print(f"\nwrote {out}")
 
 
 def main():
@@ -84,8 +85,6 @@ def main():
         help="Path to the shared design_matrix.csv (defaults to Data/Processed/design_matrix.csv)",
     )
     args = parser.parse_args()
-    if not args.design_matrix.is_file():
-        parser.error(f"Design matrix not found at {args.design_matrix}. Pass --design-matrix PATH.")
     matrix = pd.read_csv(args.design_matrix, index_col=0)
     run_xgboost_models(matrix, FEATURES, OUT)
 
