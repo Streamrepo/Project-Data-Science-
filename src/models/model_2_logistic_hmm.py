@@ -27,7 +27,7 @@ HMM_SEEDS = (42, 43, 44)
 
 def filter_regimes(hmm, observations):
     """Compute P(state_t | observations through t) on the half-hour grid."""
-    # hmmlearn exposes diagonal covariances as full matrices via covars_.
+    # Evaluate the diagonal Gaussian emissions in log space to avoid underflow.
     variances = np.diagonal(hmm.covars_, axis1=1, axis2=2)
     complete = np.isfinite(observations).all(axis=1)
     log_emissions = np.zeros((len(observations), hmm.n_components))
@@ -40,6 +40,7 @@ def filter_regimes(hmm, observations):
         log_prior = np.log(hmm.startprob_)
         log_transition = np.log(hmm.transmat_)
 
+    # Forward filtering uses observations through this slot. Full-sequence smoothing would leak future data.
     probabilities = np.empty_like(log_emissions)
     for t, log_emission in enumerate(log_emissions):
         # An incomplete observation contributes no emission update. Time still advances by one slot.
@@ -52,6 +53,7 @@ def filter_regimes(hmm, observations):
 
 def fit_hmm(observations, lengths):
     """Select an HMM initialization by training likelihood alone."""
+    # Compare three initializations on training likelihood because EM can converge to local optima.
     best_hmm, best_score = None, -np.inf
     for seed in HMM_SEEDS:
         hmm = GaussianHMM(
@@ -74,10 +76,11 @@ def fit_hmm(observations, lengths):
     return best_hmm, best_score
 
 
-def build_regime_features(day_ahead):
-    """Fit on complete 2021–2022 predictor runs and filter the full pre-delivery history."""
+def add_regime_features(matrix, day_ahead):
+    """Fit on 2021–2022, filter the full grid and join regime features by UTC delivery time."""
     predictors = day_ahead[HMM_INPUTS]
-    train = (day_ahead["split"] == "train").to_numpy() & np.isfinite(predictors).all(axis=1).to_numpy()
+    # Estimate the scaler only where all six training predictors are observed.
+    train = (day_ahead["split"] == "train") & np.isfinite(predictors).all(axis=1)
     training = predictors.loc[train]
     mean, sd = training.mean(), training.std(ddof=0)
     observations = ((predictors - mean) / sd).to_numpy()
@@ -88,13 +91,15 @@ def build_regime_features(day_ahead):
     lengths = np.diff(np.r_[0, breaks, len(train_slots)])
     hmm, training_likelihood = fit_hmm(observations[train], lengths)
 
-    # Stable labels ordered by ascending fitted day-ahead price. Regime 0 is the logistic reference.
+    # Order states by fitted day-ahead price. Two probabilities determine the third, the reference.
     price_column = HMM_INPUTS.index("day_ahead_price")
     order = np.argsort(hmm.means_[:, price_column])
+    regime_features = [f"regime_{state}_prob" for state in range(1, N_REGIMES)]
+    # Filter before selecting the classifier rows, which depend on ex-post data availability.
     probabilities = pd.DataFrame(
-        filter_regimes(hmm, observations)[:, order],
+        filter_regimes(hmm, observations)[:, order[1:]],
         index=day_ahead.index,
-        columns=[f"regime_{state}_prob" for state in range(N_REGIMES)],
+        columns=regime_features,
     )
     summary = {
         "inputs": HMM_INPUTS,
@@ -106,18 +111,15 @@ def build_regime_features(day_ahead):
         "initial_probabilities": hmm.startprob_[order].tolist(),
         "transition_matrix": hmm.transmat_[np.ix_(order, order)].tolist(),
     }
-    return probabilities, summary
+    matrix = matrix.set_axis(pd.to_datetime(matrix.index, utc=True), axis="index")
+    return matrix.join(probabilities, validate="one_to_one"), regime_features, summary
 
 
 def main():
     matrix = pd.read_csv(PROCESSED / "design_matrix.csv", index_col=0)
-    matrix.index = pd.to_datetime(matrix.index, utc=True)
     _, day_ahead = build_day_ahead_table()
-    probabilities, summary = build_regime_features(day_ahead)
-
-    # Match Model 1's exact evaluation rows after filtering, since they depend on ex-post availability.
-    regime_features = list(probabilities.columns[1:])
-    matrix = matrix.join(probabilities[regime_features], validate="one_to_one")
+    matrix, regime_features, summary = add_regime_features(matrix, day_ahead)
+    # Use the baseline logistic protocol so the comparison measures the addition of regime features.
     run_logistic_models(matrix, FEATURES + regime_features, OUT)
     (OUT / "regimes.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
